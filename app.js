@@ -669,6 +669,59 @@
     toast('已开始下载备份文件');
   }
 
+  function normalizeImported(data) {
+    // 兼容安卓 Flutter 导出字段
+    const accounts = (data.accounts || []).map((a) => ({
+      id: a.id,
+      name: a.name || '账户',
+      balance: Number(a.balance != null ? a.balance : a.currentBalance) || 0,
+      icon: a.icon || '💳',
+      type: a.type || '',
+    }));
+    const categories = (data.categories || []).map((c) => ({
+      id: c.id,
+      name: c.name || '分类',
+      type: c.type || 'expense',
+      icon: c.icon || '📦',
+    }));
+    // 跳过已删除账单
+    const transactions = (data.transactions || [])
+      .filter((t) => !t.isDeleted)
+      .map((t) => ({
+        id: t.id,
+        amount: Number(t.amount) || 0,
+        type: t.type || 'expense',
+        categoryId: t.categoryId || '',
+        accountId: t.accountId || '',
+        toAccountId: t.toAccountId || null,
+        date: t.date,
+        note: t.note || '',
+      }));
+    const budgets = (data.budgets || []).map((b) => {
+      const kind = b.kind || (b.periodKind === 1 ? 'salary' : 'month');
+      let salaryStart = b.salaryStart || '';
+      if (!salaryStart && b.salaryStartMs) {
+        try { salaryStart = new Date(b.salaryStartMs).toISOString(); } catch (_) {}
+      }
+      return {
+        id: b.id,
+        name: b.name || '预算',
+        amount: Number(b.amount) || 0,
+        categoryId: b.categoryId || null,
+        kind,
+        year: b.year || new Date().getFullYear(),
+        month: b.month || (new Date().getMonth() + 1),
+        salaryStart,
+      };
+    });
+    return {
+      accounts: accounts.length ? accounts : defaultAccounts(),
+      categories: categories.length ? categories : defaultCategories(),
+      transactions,
+      budgets,
+    };
+  }
+
   function doImport(file) {
     const reader = new FileReader();
     reader.onload = () => {
@@ -676,10 +729,7 @@
         const data = JSON.parse(reader.result);
         if (data.format && data.format !== 'accounting_app_backup') throw new Error('不是本应用备份');
         if (!confirm('导入将覆盖本机浏览器中的当前数据，确定？')) return;
-        store.accounts = data.accounts || defaultAccounts();
-        store.categories = data.categories || defaultCategories();
-        store.transactions = data.transactions || [];
-        store.budgets = data.budgets || [];
+        store = normalizeImported(data);
         save();
         refresh();
         toast(`导入完成：${store.transactions.length} 笔账单`);
