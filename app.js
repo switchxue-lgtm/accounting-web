@@ -36,7 +36,13 @@
         };
       }
       const data = JSON.parse(raw);
-      data.accounts = data.accounts || defaultAccounts();
+      data.accounts = (data.accounts || defaultAccounts()).map((a) => ({
+        id: String(a.id),
+        name: a.name || '账户',
+        icon: a.icon || '💳',
+        type: a.type || '',
+        balance: parseFloat(a.balance != null ? a.balance : a.currentBalance) || 0,
+      }));
       data.categories = data.categories || defaultCategories();
       data.transactions = data.transactions || [];
       data.budgets = data.budgets || [];
@@ -64,6 +70,22 @@
   let editingTxId = null;
 
   const money = (n) => '¥' + (Number(n) || 0).toFixed(2);
+  /** 兼容 balance / currentBalance（安卓导出） */
+  function accountBalance(a) {
+    if (!a) return 0;
+    const v = a.balance != null ? a.balance : a.currentBalance;
+    return parseFloat(v) || 0;
+  }
+  function normalizeAccountsInStore() {
+    store.accounts = (store.accounts || []).map((a) => ({
+      ...a,
+      id: String(a.id),
+      name: a.name || '账户',
+      icon: a.icon || '💳',
+      balance: accountBalance(a),
+    }));
+  }
+
   const pad = (n) => String(n).padStart(2, '0');
 
   function toast(msg) {
@@ -104,7 +126,7 @@
   }
 
   function totalAssets() {
-    return store.accounts.reduce((s, a) => s + (a.balance || 0), 0);
+    return store.accounts.reduce((s, a) => s + accountBalance(a), 0);
   }
 
   /** 工资收入按时间升序 */
@@ -391,16 +413,21 @@
   // ---------- mutations ----------
   function applyBalance(t, factor) {
     // factor +1 apply, -1 rollback
+    const ensure = (a) => {
+      if (!a) return null;
+      if (a.balance == null) a.balance = accountBalance(a);
+      return a;
+    };
     if (t.type === 'transfer') {
-      const from = accById(t.accountId);
-      const to = accById(t.toAccountId);
+      const from = ensure(accById(t.accountId));
+      const to = ensure(accById(t.toAccountId));
       if (from) from.balance -= factor * t.amount;
       if (to) to.balance += factor * t.amount;
     } else if (t.type === 'expense') {
-      const a = accById(t.accountId);
+      const a = ensure(accById(t.accountId));
       if (a) a.balance -= factor * t.amount;
     } else if (t.type === 'income') {
-      const a = accById(t.accountId);
+      const a = ensure(accById(t.accountId));
       if (a) a.balance += factor * t.amount;
     }
   }
@@ -434,7 +461,7 @@
     const type = $$('#modal-tx .seg-btn.active')[0]?.dataset.txType || 'expense';
     const cats = type === 'expense' ? exp : inc;
     $('#tx-category').innerHTML = cats.map((c) => `<option value="${c.id}">${c.icon} ${c.name}</option>`).join('');
-    const accOpts = store.accounts.map((a) => `<option value="${a.id}">${a.icon} ${a.name}（${money(a.balance)}）</option>`).join('');
+    const accOpts = store.accounts.map((a) => `<option value="${a.id}">${a.icon} ${a.name}（${money(accountBalance(a))}）</option>`).join('');
     $('#tx-account').innerHTML = accOpts;
     $('#tf-from').innerHTML = accOpts;
     $('#tf-to').innerHTML = accOpts;
@@ -670,44 +697,49 @@
   }
 
   function normalizeImported(data) {
-    // 兼容安卓 Flutter 导出字段
-    const accounts = (data.accounts || []).map((a) => ({
-      id: a.id,
-      name: a.name || '账户',
-      balance: Number(a.balance != null ? a.balance : a.currentBalance) || 0,
-      icon: a.icon || '💳',
-      type: a.type || '',
-    }));
+    // 兼容安卓 Flutter 导出：优先 currentBalance
+    const accounts = (data.accounts || []).map((a) => {
+      const raw = a.currentBalance !== undefined && a.currentBalance !== null
+        ? a.currentBalance
+        : (a.balance !== undefined && a.balance !== null ? a.balance : 0);
+      return {
+        id: String(a.id),
+        name: a.name || '账户',
+        balance: parseFloat(raw) || 0,
+        icon: a.icon || '💳',
+        type: a.type || '',
+      };
+    });
     const categories = (data.categories || []).map((c) => ({
-      id: c.id,
+      id: String(c.id),
       name: c.name || '分类',
       type: c.type || 'expense',
       icon: c.icon || '📦',
     }));
-    // 跳过已删除账单
+    // 跳过已删除账单（余额以账户 currentBalance 为准，不再重算）
     const transactions = (data.transactions || [])
-      .filter((t) => !t.isDeleted)
+      .filter((t) => t && !t.isDeleted)
       .map((t) => ({
-        id: t.id,
-        amount: Number(t.amount) || 0,
+        id: String(t.id),
+        amount: parseFloat(t.amount) || 0,
         type: t.type || 'expense',
-        categoryId: t.categoryId || '',
-        accountId: t.accountId || '',
-        toAccountId: t.toAccountId || null,
+        categoryId: t.categoryId ? String(t.categoryId) : '',
+        accountId: t.accountId ? String(t.accountId) : '',
+        toAccountId: t.toAccountId ? String(t.toAccountId) : null,
         date: t.date,
         note: t.note || '',
       }));
     const budgets = (data.budgets || []).map((b) => {
-      const kind = b.kind || (b.periodKind === 1 ? 'salary' : 'month');
+      const kind = b.kind || (Number(b.periodKind) === 1 ? 'salary' : 'month');
       let salaryStart = b.salaryStart || '';
       if (!salaryStart && b.salaryStartMs) {
-        try { salaryStart = new Date(b.salaryStartMs).toISOString(); } catch (_) {}
+        try { salaryStart = new Date(Number(b.salaryStartMs)).toISOString(); } catch (_) {}
       }
       return {
-        id: b.id,
+        id: String(b.id),
         name: b.name || '预算',
-        amount: Number(b.amount) || 0,
-        categoryId: b.categoryId || null,
+        amount: parseFloat(b.amount) || 0,
+        categoryId: b.categoryId ? String(b.categoryId) : null,
         kind,
         year: b.year || new Date().getFullYear(),
         month: b.month || (new Date().getMonth() + 1),
@@ -726,18 +758,28 @@
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const data = JSON.parse(reader.result);
+        const text = reader.result;
+        const data = JSON.parse(text);
         if (data.format && data.format !== 'accounting_app_backup') throw new Error('不是本应用备份');
         if (!confirm('导入将覆盖本机浏览器中的当前数据，确定？')) return;
         store = normalizeImported(data);
         save();
+        // 强制读回，确认 localStorage 写入成功
+        store = load();
         refresh();
-        toast(`导入完成：${store.transactions.length} 笔账单`);
+        const total = store.accounts.reduce((s, a) => s + (parseFloat(a.balance) || 0), 0);
+        const names = store.accounts.map((a) => a.name + money(a.balance)).join('，');
+        toast(`导入完成：${store.transactions.length} 笔，总资产 ${money(total)}`);
+        console.log('import accounts', store.accounts);
+        if (total === 0 && store.accounts.length) {
+          alert('账户已导入但余额为 0。请把「我的→账户管理」截图发开发者。\n' + names);
+        }
       } catch (e) {
         toast('导入失败：' + e.message);
+        console.error(e);
       }
     };
-    reader.readAsText(file);
+    reader.readAsText(file, 'utf-8');
   }
 
   $('#btn-export').onclick = doExport;
@@ -770,7 +812,7 @@
     const render = () => {
       $('#generic-body').innerHTML = store.accounts.map((a) => `
         <div class="list-row">
-          <div>${a.icon} ${escapeHtml(a.name)}<div class="muted small">${money(a.balance)}</div></div>
+          <div>${a.icon} ${escapeHtml(a.name)}<div class="muted small">${money(accountBalance(a))}</div></div>
           <div>
             <button type="button" data-adj="${a.id}">调余额</button>
           </div>
@@ -778,7 +820,7 @@
       $$('[data-adj]').forEach((btn) => {
         btn.onclick = () => {
           const a = accById(btn.dataset.adj);
-          const v = prompt('将「' + a.name + '」余额调整为', String(a.balance));
+          const v = prompt('将「' + a.name + '」余额调整为', String(accountBalance(a)));
           if (v === null) return;
           const n = parseFloat(v);
           if (Number.isNaN(n)) return toast('无效数字');
@@ -846,6 +888,8 @@
     });
   };
 
-  // init
+  // init：兼容旧导入数据（只有 currentBalance）
+  normalizeAccountsInStore();
+  save();
   renderHome();
 })();
